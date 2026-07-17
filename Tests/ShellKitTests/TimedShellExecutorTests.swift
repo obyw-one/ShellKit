@@ -265,4 +265,35 @@ final class TimedShellExecutorTests: XCTestCase {
             "Semaphore signal starvation detected: \(elapsed)s (expected <15s). " +
             "Actor-mailbox starvation — Task.detached fix may be missing.")
     }
+
+    // MARK: - W1.4 bounded post-exit drains (mop-gh hang, shikki @db c6e806e7)
+
+    func testHolderGrandchildDoesNotHangPostExitDrain() async throws {
+        // A child that exits immediately but leaves a backgrounded grandchild
+        // holding the inherited stdout write-end. Pipe EOF then waits for the
+        // GRANDCHILD (30s here — indefinitely for a daemonized helper), and
+        // the post-exit `await stdoutData` had no bound because the timeout
+        // watchdog is cancelled once the child's exit resumes the
+        // continuation. Live-sampled root cause of `shi mop` hanging on its
+        // gh leg (TimedShellExecutor.swift readDataToEndOfFile frame).
+        let executor = TimedShellExecutor()
+        let start = Date()
+        let result = try await executor.run(
+            ["bash", "-c", "echo hi; sleep 30 &"],
+            cwd: nil,
+            env: nil,
+            timeout: 10,
+            stdin: nil
+        )
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertEqual(
+            result.stdoutString.trimmingCharacters(in: .whitespacesAndNewlines),
+            "hi",
+            "output written before exit must be captured")
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertLessThan(
+            elapsed, 8.0,
+            "post-exit drain must be bounded by the grace period, "
+                + "not the grandchild's lifetime (took \(elapsed)s)")
+    }
 }

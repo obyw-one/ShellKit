@@ -35,6 +35,12 @@ public actor TimedShellExecutor: ShellExecutorProtocol {
     /// well-behaved processes; D-state processes are killed forcibly by SIGKILL.
     private static let sigtermGracePeriod: TimeInterval = 1.0
 
+    /// W1.4 — post-exit pipe-drain grace. After the child exits, its buffered
+    /// output flushes within milliseconds; anything later can only come from a
+    /// grandchild that inherited the write-end. 2 s is generous for flush and
+    /// keeps a daemonized holder from hanging the caller forever.
+    private static let drainGracePeriod: TimeInterval = 2.0
+
     private let semaphore: AsyncSemaphore
 
     /// Create a new executor.
@@ -167,17 +173,18 @@ public actor TimedShellExecutor: ShellExecutorProtocol {
 
         // H6 fix: drain pipes IN PARALLEL with the wait.
         // Reading pipes only after waitUntilExit() deadlocks when child
-        // produces >64KB (the pipe kernel buffer size on macOS). Background
-        // Tasks drain continuously so child never blocks on backpressure.
-        // NOTE: async let starts immediately here (before proc.run()), so
-        // readDataToEndOfFile() is already blocked on the read-end by the time
+        // produces >64KB (the pipe kernel buffer size on macOS). Handlers are
+        // installed here (before proc.run()) so draining is live by the time
         // the child starts writing — no backpressure window.
-        async let stdoutData: Data = Task.detached {
-            stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        }.value
-        async let stderrData: Data = Task.detached {
-            stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        }.value
+        //
+        // W1.4 (mop-gh hang, shikki @db c6e806e7): the drains are
+        // readabilityHandler-based (dispatch source), NOT a thread blocked in
+        // readDataToEndOfFile(). A grandchild that daemonizes holding the
+        // inherited write-end (credential-helper pattern) postpones pipe EOF
+        // indefinitely — a blocked read() cannot be cancelled on Darwin, but a
+        // handler-based drain can be force-finished after the post-exit grace.
+        let stdoutDrain = PipeDrain(handle: stdoutPipe.fileHandleForReading)
+        let stderrDrain = PipeDrain(handle: stderrPipe.fileHandleForReading)
 
         // Wire handler and run — the continuation resumes when the process exits.
         // proc.run() is called INSIDE the continuation so the handler is wired
@@ -221,8 +228,19 @@ public actor TimedShellExecutor: ShellExecutorProtocol {
         timeoutTask.cancel()
 
         let exitCode = proc.terminationStatus
-        let stdout = await stdoutData
-        let stderr = await stderrData
+        // W1.4: bound the post-exit drain. The child has exited; give the
+        // pipes a short window to flush buffered output, then force-finish
+        // with whatever arrived. Without this, `await` here was UNBOUNDED
+        // (the timeout watchdog is already cancelled) and a write-end holder
+        // hung the caller forever — the live-sampled `shi mop` gh-leg hang.
+        let drainGraceTask = Task.detached {
+            try? await Task.sleep(nanoseconds: UInt64(Self.drainGracePeriod * 1_000_000_000))
+            stdoutDrain.forceFinish()
+            stderrDrain.forceFinish()
+        }
+        let stdout = await stdoutDrain.value()
+        let stderr = await stderrDrain.value()
+        drainGraceTask.cancel()
         let duration = Date().timeIntervalSince(start)
 
         // Detect timeout: flag was set by the watchdog before process exited.
@@ -231,6 +249,71 @@ public actor TimedShellExecutor: ShellExecutorProtocol {
         }
 
         return ShellCommandResult(exitCode: exitCode, stdout: stdout, stderr: stderr, duration: duration)
+    }
+}
+
+// MARK: - PipeDrain (W1.4)
+
+/// Handler-based pipe accumulator with a force-finish escape hatch.
+///
+/// `readabilityHandler` delivers chunks on a dispatch source — no thread is
+/// ever parked in `read(2)`, so the drain can always be terminated even when
+/// pipe EOF never arrives (a daemonized grandchild holding the write-end).
+/// EOF (empty `availableData`) finishes naturally; `forceFinish()` finishes
+/// with whatever accumulated.
+private final class PipeDrain: @unchecked Sendable {
+    private let lock = NSLock()
+    private let handle: FileHandle
+    private var buffer = Data()
+    private var finished = false
+    private var continuation: CheckedContinuation<Data, Never>?
+
+    init(handle: FileHandle) {
+        self.handle = handle
+        handle.readabilityHandler = { [weak self] h in
+            guard let self else { return }
+            let chunk = h.availableData
+            if chunk.isEmpty {
+                self.finish()  // EOF — all write-ends closed.
+            } else {
+                self.lock.lock()
+                self.buffer.append(chunk)
+                self.lock.unlock()
+            }
+        }
+    }
+
+    /// Finish with the accumulated data regardless of EOF (post-exit grace).
+    func forceFinish() { finish() }
+
+    private func finish() {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        let cont = continuation
+        continuation = nil
+        let data = buffer
+        lock.unlock()
+        handle.readabilityHandler = nil
+        cont?.resume(returning: data)
+    }
+
+    /// Await the drained data. Resolves on EOF or forceFinish, whichever first.
+    func value() async -> Data {
+        await withCheckedContinuation { (c: CheckedContinuation<Data, Never>) in
+            lock.lock()
+            if finished {
+                let data = buffer
+                lock.unlock()
+                c.resume(returning: data)
+                return
+            }
+            continuation = c
+            lock.unlock()
+        }
     }
 }
 
