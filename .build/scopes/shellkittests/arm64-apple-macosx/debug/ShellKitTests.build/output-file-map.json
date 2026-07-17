@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/jeoffrey/.shikki/workspaces/obyw-one/projects/ShellKit/.build/scopes/shellkittests/arm64-apple-macosx/debug/ShellKitTests.build/primary.swiftdeps"
+  },
+  "/Users/jeoffrey/.shikki/workspaces/obyw-one/projects/ShellKit/Tests/ShellKitTests/TimedShellExecutorTests.swift": {
+    "dependencies": "/Users/jeoffrey/.shikki/workspaces/obyw-one/projects/ShellKit/.build/scopes/shellkittests/arm64-apple-macosx/debug/ShellKitTests.build/TimedShellExecutorTests.d",
+    "object": "/Users/jeoffrey/.shikki/workspaces/obyw-one/projects/ShellKit/.build/scopes/shellkittests/arm64-apple-macosx/debug/ShellKitTests.build/TimedShellExecutorTests.swift.o",
+    "swiftmodule": "/Users/jeoffrey/.shikki/workspaces/obyw-one/projects/ShellKit/.build/scopes/shellkittests/arm64-apple-macosx/debug/ShellKitTests.build/TimedShellExecutorTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/jeoffrey/.shikki/workspaces/obyw-one/projects/ShellKit/.build/scopes/shellkittests/arm64-apple-macosx/debug/ShellKitTests.build/TimedShellExecutorTests.swiftdeps",
+    "diagnostics": "/Users/jeoffrey/.shikki/workspaces/obyw-one/projects/ShellKit/.build/scopes/shellkittests/arm64-apple-macosx/debug/ShellKitTests.build/TimedShellExecutorTests.dia"
+  }
+}
