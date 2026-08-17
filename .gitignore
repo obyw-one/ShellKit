@@ -1,2 +1,10 @@
+# SPM / Swift build artefacts — never committed
+.build/
+.swiftpm/
+
 # kagami scratch (history shards, caches) — never committed
 .kagami/
+
+# moto code-intelligence cache — local tooling artefact, not source
+.moto
+.moto-cache/
